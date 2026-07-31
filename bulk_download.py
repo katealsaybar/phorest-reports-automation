@@ -1,4 +1,4 @@
-"""
+r"""
 Bulk-download Staff Performance Overview reports from Phorest, one PDF per
 day, for a given branch/account and date range.
 
