@@ -1,6 +1,9 @@
 r"""
 Bulk-download Staff Performance Overview reports from Phorest, one PDF per
-day, for a given branch/account and date range.
+day, for a given branch/account and date range. Report requests run
+concurrently across a pool of pages sharing one logged-in browser session,
+instead of one date at a time — this is the main speedup over looping
+sequentially.
 
 Requires phorest_session.json to already exist (run save_session.py once
 first to log in manually and capture the session). The same session works
@@ -9,8 +12,9 @@ across branches as long as the logged-in user has access to that account.
 Usage:
     py bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --end 2026-01-31
     py bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --end 2026-01-31 --outdir "D:\Reports\AlQuoz"
+    py bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --end 2026-01-31 --concurrency 8
 
-Flow per date:
+Flow per date (run concurrently, --concurrency dates in flight at once):
     1. Build the jasper-reports URL with FROM_DATE/TO_DATE set to that date.
     2. Navigate there (loads the given account, pre-fills the date pickers).
     3. Click "Generate now".
@@ -25,21 +29,21 @@ the run continues rather than crashing.
 """
 
 import argparse
+import asyncio
 import json
-import random
 import re
 import sys
-import time
 import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 SCRIPT_DIR = Path(__file__).parent
 SESSION_FILE = SCRIPT_DIR / "phorest_session.json"
 DEFAULT_DOWNLOAD_DIR = SCRIPT_DIR / "downloads"
+DEFAULT_CONCURRENCY = 5
 
 
 def build_report_url(account_id: str, date_str: str) -> str:
@@ -70,17 +74,17 @@ def download_pdf(url: str, dest: Path):
     dest.write_bytes(data)
 
 
-def process_date(page, account_id: str, prefix: str, date_str: str, download_dir: Path):
+async def process_date(page, account_id: str, prefix: str, date_str: str, download_dir: Path):
     url = build_report_url(account_id, date_str)
     report_viewer_pattern = re.compile(rf"https://my\.phorest\.com/a/{account_id}/report-viewer\?reportId=")
     try:
-        page.goto(url, wait_until="load", timeout=45000)
+        await page.goto(url, wait_until="load", timeout=45000)
 
         generate_btn = page.get_by_role("button", name="Generate now")
-        generate_btn.wait_for(state="visible", timeout=30000)
-        generate_btn.click()
+        await generate_btn.wait_for(state="visible", timeout=30000)
+        await generate_btn.click()
 
-        page.wait_for_url(report_viewer_pattern, timeout=60000)
+        await page.wait_for_url(report_viewer_pattern, timeout=60000)
 
         query = urllib.parse.urlparse(page.url).query
         params = urllib.parse.parse_qs(query)
@@ -89,14 +93,91 @@ def process_date(page, account_id: str, prefix: str, date_str: str, download_dir
             raise ValueError("reportUrl param missing from report-viewer URL")
 
         dest = download_dir / f"{prefix}-staff-performance-{date_str}.pdf"
-        download_pdf(report_url, dest)
+        await asyncio.to_thread(download_pdf, report_url, dest)
         return dest
     except Exception:
         try:
-            page.screenshot(path=str(download_dir / f"_debug_failure_{prefix}_{date_str}.png"))
+            await page.screenshot(path=str(download_dir / f"_debug_failure_{prefix}_{date_str}.png"))
         except Exception:
             pass
         raise
+
+
+async def _worker(context, queue: asyncio.Queue, results: dict, stagger: float):
+    # Small stagger so concurrent workers don't all hit "Generate now" in the
+    # same instant on startup.
+    await asyncio.sleep(stagger)
+    page = await context.new_page()
+    try:
+        while True:
+            try:
+                job = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            account_id, prefix, date_str, download_dir = job
+            try:
+                dest = await process_date(page, account_id, prefix, date_str, download_dir)
+                print(f"[OK]   {date_str} -> {dest.name}")
+                results["ok"].append(date_str)
+            except PlaywrightTimeoutError:
+                print(f"[FAIL] {date_str} -> timed out waiting for report")
+                results["failed"].append(date_str)
+            except Exception as e:
+                print(f"[FAIL] {date_str} -> {e}")
+                results["failed"].append(date_str)
+    finally:
+        await page.close()
+
+
+async def run_jobs(jobs: list, concurrency: int = DEFAULT_CONCURRENCY, headless: bool = True) -> dict:
+    """Run (account_id, prefix, date_str, download_dir) jobs across a pool of
+    concurrent pages sharing one logged-in browser context."""
+    queue: asyncio.Queue = asyncio.Queue()
+    for job in jobs:
+        queue.put_nowait(job)
+
+    results = {"ok": [], "failed": []}
+    n_workers = max(1, min(concurrency, len(jobs)))
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(storage_state=str(SESSION_FILE))
+        workers = [
+            asyncio.create_task(_worker(context, queue, results, stagger=i * 0.4))
+            for i in range(n_workers)
+        ]
+        await asyncio.gather(*workers)
+        await browser.close()
+
+    return results
+
+
+async def main_async(args):
+    start = date.fromisoformat(args.start)
+    end = date.fromisoformat(args.end)
+    download_dir = Path(args.outdir)
+    failed_log = download_dir / "failed_dates.txt"
+
+    if not SESSION_FILE.exists():
+        print(f"ERROR: session file not found at {SESSION_FILE}. Run save_session.py first.")
+        sys.exit(1)
+
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs = [
+        (args.account, args.prefix, d.isoformat(), download_dir)
+        for d in daterange(start, end)
+    ]
+
+    results = await run_jobs(jobs, concurrency=args.concurrency, headless=not args.show)
+
+    if results["failed"]:
+        with open(failed_log, "a") as f:
+            for date_str in results["failed"]:
+                f.write(f"{args.prefix} {date_str}\n")
+        print(f"\n{len(results['ok'])} succeeded, {len(results['failed'])} failed. See {failed_log}")
+    else:
+        print(f"\nAll {len(results['ok'])} date(s) processed successfully.")
 
 
 def main():
@@ -110,51 +191,20 @@ def main():
         default=str(DEFAULT_DOWNLOAD_DIR),
         help="Folder to save PDFs into (created if missing). Defaults to ./downloads next to this script.",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"Number of report requests to run in parallel (default {DEFAULT_CONCURRENCY}). "
+        "Higher is faster but hits Phorest harder — dial back if you see failures.",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Run with a visible browser window instead of headless (slower, useful for debugging).",
+    )
     args = parser.parse_args()
-
-    start = date.fromisoformat(args.start)
-    end = date.fromisoformat(args.end)
-    download_dir = Path(args.outdir)
-    failed_log = download_dir / "failed_dates.txt"
-
-    if not SESSION_FILE.exists():
-        print(f"ERROR: session file not found at {SESSION_FILE}. Run save_session.py first.")
-        sys.exit(1)
-
-    download_dir.mkdir(parents=True, exist_ok=True)
-
-    failed_dates = []
-    ok_count = 0
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context(storage_state=str(SESSION_FILE))
-        page = context.new_page()
-
-        for d in daterange(start, end):
-            date_str = d.isoformat()
-            try:
-                dest = process_date(page, args.account, args.prefix, date_str, download_dir)
-                print(f"[OK]   {date_str} -> {dest.name}")
-                ok_count += 1
-            except PlaywrightTimeoutError:
-                print(f"[FAIL] {date_str} -> timed out waiting for report")
-                failed_dates.append(date_str)
-            except Exception as e:
-                print(f"[FAIL] {date_str} -> {e}")
-                failed_dates.append(date_str)
-
-            time.sleep(random.uniform(2, 3))
-
-        browser.close()
-
-    if failed_dates:
-        with open(failed_log, "a") as f:
-            for d in failed_dates:
-                f.write(f"{args.prefix} {d}\n")
-        print(f"\n{ok_count} succeeded, {len(failed_dates)} failed. See {failed_log}")
-    else:
-        print(f"\nAll {ok_count} date(s) processed successfully.")
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
