@@ -1,0 +1,12 @@
+# Session cookies — your live Phorest login, never commit
+phorest_session.json
+
+# Downloaded reports — real business/staff data, never commit
+downloads/
+
+# Failure log from batch runs
+failed_dates.txt
+
+# Python
+__pycache__/
+*.pyc
