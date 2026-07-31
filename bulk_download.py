@@ -8,6 +8,7 @@ across branches as long as the logged-in user has access to that account.
 
 Usage:
     py bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --end 2026-01-31
+    py bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --end 2026-01-31 --outdir "D:\Reports\AlQuoz"
 
 Flow per date:
     1. Build the jasper-reports URL with FROM_DATE/TO_DATE set to that date.
@@ -16,7 +17,8 @@ Flow per date:
     4. Wait for the SPA to route to /report-viewer?reportId=...&reportUrl=...
     5. Pull the reportUrl (a presigned S3 link straight to the PDF) out of
        that URL and fetch it directly with a plain HTTP GET.
-    6. Save it as downloads/<prefix>-staff-performance-YYYY-MM-DD.pdf
+    6. Save it as <outdir>/<prefix>-staff-performance-YYYY-MM-DD.pdf
+       (--outdir defaults to ./downloads next to this script)
 
 Failures on any single date are logged to failed_dates.txt and skipped —
 the run continues rather than crashing.
@@ -37,8 +39,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 SCRIPT_DIR = Path(__file__).parent
 SESSION_FILE = SCRIPT_DIR / "phorest_session.json"
-DOWNLOAD_DIR = SCRIPT_DIR / "downloads"
-FAILED_LOG = SCRIPT_DIR / "failed_dates.txt"
+DEFAULT_DOWNLOAD_DIR = SCRIPT_DIR / "downloads"
 
 
 def build_report_url(account_id: str, date_str: str) -> str:
@@ -69,7 +70,7 @@ def download_pdf(url: str, dest: Path):
     dest.write_bytes(data)
 
 
-def process_date(page, account_id: str, prefix: str, date_str: str):
+def process_date(page, account_id: str, prefix: str, date_str: str, download_dir: Path):
     url = build_report_url(account_id, date_str)
     report_viewer_pattern = re.compile(rf"https://my\.phorest\.com/a/{account_id}/report-viewer\?reportId=")
     try:
@@ -87,12 +88,12 @@ def process_date(page, account_id: str, prefix: str, date_str: str):
         if not report_url:
             raise ValueError("reportUrl param missing from report-viewer URL")
 
-        dest = DOWNLOAD_DIR / f"{prefix}-staff-performance-{date_str}.pdf"
+        dest = download_dir / f"{prefix}-staff-performance-{date_str}.pdf"
         download_pdf(report_url, dest)
         return dest
     except Exception:
         try:
-            page.screenshot(path=str(DOWNLOAD_DIR / f"_debug_failure_{prefix}_{date_str}.png"))
+            page.screenshot(path=str(download_dir / f"_debug_failure_{prefix}_{date_str}.png"))
         except Exception:
             pass
         raise
@@ -104,16 +105,23 @@ def main():
     parser.add_argument("--prefix", required=True, help="Filename prefix, e.g. al-quoz")
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="YYYY-MM-DD")
+    parser.add_argument(
+        "--outdir",
+        default=str(DEFAULT_DOWNLOAD_DIR),
+        help="Folder to save PDFs into (created if missing). Defaults to ./downloads next to this script.",
+    )
     args = parser.parse_args()
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
+    download_dir = Path(args.outdir)
+    failed_log = download_dir / "failed_dates.txt"
 
     if not SESSION_FILE.exists():
         print(f"ERROR: session file not found at {SESSION_FILE}. Run save_session.py first.")
         sys.exit(1)
 
-    DOWNLOAD_DIR.mkdir(exist_ok=True)
+    download_dir.mkdir(parents=True, exist_ok=True)
 
     failed_dates = []
     ok_count = 0
@@ -126,7 +134,7 @@ def main():
         for d in daterange(start, end):
             date_str = d.isoformat()
             try:
-                dest = process_date(page, args.account, args.prefix, date_str)
+                dest = process_date(page, args.account, args.prefix, date_str, download_dir)
                 print(f"[OK]   {date_str} -> {dest.name}")
                 ok_count += 1
             except PlaywrightTimeoutError:
@@ -141,10 +149,10 @@ def main():
         browser.close()
 
     if failed_dates:
-        with open(FAILED_LOG, "a") as f:
+        with open(failed_log, "a") as f:
             for d in failed_dates:
                 f.write(f"{args.prefix} {d}\n")
-        print(f"\n{ok_count} succeeded, {len(failed_dates)} failed. See {FAILED_LOG}")
+        print(f"\n{ok_count} succeeded, {len(failed_dates)} failed. See {failed_log}")
     else:
         print(f"\nAll {ok_count} date(s) processed successfully.")
 

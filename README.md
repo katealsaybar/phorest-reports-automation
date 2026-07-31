@@ -43,11 +43,17 @@ python bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --en
 | Motor City | 46729 |
 | Saadiyat | 36629 |
 
-PDFs are saved to `downloads/<prefix>-staff-performance-<date>.pdf`.
+PDFs are saved to `downloads/<prefix>-staff-performance-<date>.pdf` by default.
+Add `--outdir` to save somewhere else, e.g.:
+
+```bash
+python bulk_download.py --account 52308 --prefix al-quoz --start 2026-01-01 --end 2026-01-31 --outdir "D:\Reports\AlQuoz"
+```
 
 Any date that fails (timeout, session expired, etc.) is skipped and logged
-to `failed_dates.txt` — the run continues rather than crashing. Re-run the
-same command with `--start`/`--end` set to just the failed date(s) to retry.
+to `failed_dates.txt` inside that same output folder — the run continues
+rather than crashing. Re-run the same command with `--start`/`--end` set to
+just the failed date(s) to retry.
 
 ## Notes
 
