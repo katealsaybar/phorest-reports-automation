@@ -141,18 +141,21 @@ REPORTS = {
         "opens_popup": False,
     },
     "sales-transactions": {
-        # Folder is "staff financial totals" (10 Sep 2026, Kate's naming call
-        # — matches the utilisation-reports precedent of folder name != exact
-        # report name), but the --report key, filenames, and the underlying
-        # Phorest report stay "sales-transactions"/"Sales Transactions" — the
-        # raw per-line-item data this pulls could feed other things later,
-        # not just the staff_financial_totals table it feeds today.
+        # Folder briefly renamed to "staff financial totals" on 10 Sep 2026,
+        # reverted the same day — Kate's call both times. Folder, --report
+        # key, filenames and the underlying Phorest report all say
+        # "sales-transactions"/"Sales Transactions" now, matching exactly.
         "category": None,
         "report": "TRANSACTIONS",
-        "filters": {"excludeSelfEmployedStaff": False},
+        # include_client_courses: confirmed live 10 Sep 2026 (ticked the box,
+        # read the resulting filters param) — off by default, so course
+        # redemptions/sales were silently missing from every PDF pulled
+        # before this. Its own key/value shape (snake_case, unlike Phorest's
+        # other filters) came straight off that same live check, not guessed.
+        "filters": {"excludeSelfEmployedStaff": False, "include_client_courses": True},
         "routing": "flat",
-        "download_dir": REPORTS_BASE / "staff financial totals" / "downloads",
-        "month_base": REPORTS_BASE / "staff financial totals" / "downloads",
+        "download_dir": REPORTS_BASE / "sales transactions" / "downloads",
+        "month_base": REPORTS_BASE / "sales transactions" / "downloads",
         "date_subfolder": True,  # .../<month folder>/<YYYY-MM-DD>/<pdf> in the mirror
         "opens_popup": False,
     },

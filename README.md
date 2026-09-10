@@ -13,7 +13,7 @@ worked before this flag existed still works unchanged. Full detail on each
 |---|---|---|
 | `staff-performance` (default) | Staff Performance Overview | `downloads/`, mirrored into `phorest-reports/downloads/` |
 | `financial-totals` | Financial Totals | `../financial totals/downloads/` |
-| `sales-transactions` | Sales Transactions | `../staff financial totals/downloads/` (folder named for the deliverable, not the report — with an extra date-named subfolder in the mirror) |
+| `sales-transactions` | Sales Transactions | `../sales transactions/downloads/` (with an extra date-named subfolder in the mirror) |
 | `staff-utilisation` | Staff Utilisation | `../utilisation reports/downloads/<branch>/<year>/<month>/` (nested only, no flat copy — `collect_today.py` there expects this) |
 
 The report name is also the filename segment, so no two collide.
