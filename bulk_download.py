@@ -141,12 +141,19 @@ REPORTS = {
         "opens_popup": False,
     },
     "sales-transactions": {
+        # Folder is "staff financial totals" (10 Sep 2026, Kate's naming call
+        # — matches the utilisation-reports precedent of folder name != exact
+        # report name), but the --report key, filenames, and the underlying
+        # Phorest report stay "sales-transactions"/"Sales Transactions" — the
+        # raw per-line-item data this pulls could feed other things later,
+        # not just the staff_financial_totals table it feeds today.
         "category": None,
         "report": "TRANSACTIONS",
         "filters": {"excludeSelfEmployedStaff": False},
         "routing": "flat",
-        "download_dir": REPORTS_BASE / "sales transactions" / "downloads",
-        "month_base": REPORTS_BASE / "sales transactions" / "downloads",
+        "download_dir": REPORTS_BASE / "staff financial totals" / "downloads",
+        "month_base": REPORTS_BASE / "staff financial totals" / "downloads",
+        "date_subfolder": True,  # .../<month folder>/<YYYY-MM-DD>/<pdf> in the mirror
         "opens_popup": False,
     },
     "staff-utilisation": {
@@ -170,21 +177,26 @@ class SessionExpired(Exception):
     """The saved session can no longer authenticate. Re-run save_session.py."""
 
 
-def month_folder_path(base: Path, prefix: str, d: date) -> Path:
+def month_folder_path(base: Path, prefix: str, d: date, date_subfolder: bool = False) -> Path:
     """<base>/<branch>/<year> <branch>/<MM><year> <branch>/ — the one nested
     layout every report's month-folder mirror (or, for staff-utilisation, the
-    ONLY copy) resolves to."""
+    ONLY copy) resolves to. Reports whose spec sets "date_subfolder": True
+    (staff-financial-totals — see its own REPORTS entry) get one more level,
+    a plain YYYY-MM-DD folder, so the day's PDF sits somewhere browsable on
+    its own rather than named-but-flat inside the month folder."""
     branch = BRANCH_FOLDERS.get(prefix, prefix)
-    return base / branch / f"{d.year} {branch}" / f"{d.month:02d}{d.year} {branch}"
+    folder = base / branch / f"{d.year} {branch}" / f"{d.month:02d}{d.year} {branch}"
+    return folder / d.isoformat() if date_subfolder else folder
 
 
 def mirror_to_month_folder(dest: Path, prefix: str, date_str: str, report: str):
     """Copy a flat-routed download into its month-folder mirror. No-op for
     nested-routed reports, which already saved straight into that tree."""
-    if REPORTS[report]["routing"] != "flat" or not dest.exists():
+    spec = REPORTS[report]
+    if spec["routing"] != "flat" or not dest.exists():
         return
     d = date.fromisoformat(date_str)
-    folder = month_folder_path(REPORTS[report]["month_base"], prefix, d)
+    folder = month_folder_path(spec["month_base"], prefix, d, spec.get("date_subfolder", False))
     copy = folder / dest.name
     if copy.exists():
         return
@@ -195,13 +207,13 @@ def mirror_to_month_folder(dest: Path, prefix: str, date_str: str, report: str):
 def resolve_dest_dir(report: str, prefix: str, date_str: str, override: Path = None) -> Path:
     """Where THIS date's PDF for THIS report actually lands. Flat-routed
     reports use one static folder (override replaces it, e.g. --outdir);
-    nested-routed ones resolve a branch/year/month path per date (override
-    replaces the tree's root instead, matching the old --base-outdir)."""
+    nested-routed ones resolve a branch/year/month(/date) path per date
+    (override replaces the tree's root instead, matching the old --base-outdir)."""
     spec = REPORTS[report]
     if spec["routing"] == "flat":
         return override or spec["download_dir"]
     base = override or spec["nested_base"]
-    return month_folder_path(base, prefix, date.fromisoformat(date_str))
+    return month_folder_path(base, prefix, date.fromisoformat(date_str), spec.get("date_subfolder", False))
 
 
 def build_report_url(account_id: str, date_str: str, report: str = DEFAULT_REPORT) -> str:
