@@ -34,6 +34,7 @@ SP_BRANCH_SLUGS = {
     'khalifa-city': 'KCA',
     'motor-city': 'MC',
     'al-quoz': 'AQ',
+    'fratelli': 'FRT', 'bahrain': 'BAH',  # Tara Rose Salon Bahrain, separate Phorest business (30 Sep 2026)
 }
 
 IS_INT = re.compile(r'^\d+$')
@@ -47,6 +48,15 @@ def norm_line(s):
 
 def to_num(t):
     return float(t.replace(',', ''))
+
+
+def to_num_or_none(t):
+    # Mirrors the site's JS: parseFloat('NA') -> NaN -> JSON.stringify -> null.
+    # Only avg-spend fields legitimately hit this (divide-by-zero on 0 clients).
+    try:
+        return to_num(t)
+    except ValueError:
+        return None
 
 
 def strip_archived(name):
@@ -138,7 +148,13 @@ def parse_one_block(lines, branch_code):
     i = 0
     while i < len(tokens):
         name_parts = []
-        while i < len(tokens) and not IS_INT.match(tokens[i]) and not IS_MONEY.match(tokens[i]):
+        while i < len(tokens) and not IS_MONEY.match(tokens[i]):
+            if IS_INT.match(tokens[i]):
+                # A number inside a name ("Tara 1 (A)") is followed by a word; a visits count is
+                # always followed by the New count, another integer.
+                nxt = tokens[i + 1] if i + 1 < len(tokens) else ''
+                if not name_parts or IS_INT.match(nxt) or IS_MONEY.match(nxt) or not nxt:
+                    break
             name_parts.append(tokens[i])
             i += 1
         if not name_parts:
@@ -171,7 +187,7 @@ def parse_one_block(lines, branch_code):
             'coursesExVat': to_num(f[6]), 'coursesTotal': to_num(f[7]),
             'productsExVat': to_num(f[8]), 'productsTotal': to_num(f[9]),
             'totalExVat': to_num(f[10]), 'totalTotal': to_num(f[11]),
-            'avgSpendExVat': to_num(f[12]), 'avgSpendTotal': to_num(f[13]),
+            'avgSpendExVat': to_num_or_none(f[12]), 'avgSpendTotal': to_num_or_none(f[13]),
         })
         i += need
 
